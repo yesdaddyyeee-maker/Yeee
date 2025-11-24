@@ -13,7 +13,7 @@ import readline from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,7 +34,10 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
-async function connectToWhatsApp(phoneNumber = null) {
+let pairingCodeRequested = false;
+let waitingForPairing = false;
+
+async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
   
   const sock = makeWASocket({
@@ -44,7 +47,7 @@ async function connectToWhatsApp(phoneNumber = null) {
     },
     logger,
     printQRInTerminal: false,
-    browser: ["Windows", 'Chrome', '1.0.0']
+    browser: ['Windows', 'Chrome', '10.0']
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -55,44 +58,84 @@ async function connectToWhatsApp(phoneNumber = null) {
     if (connection === 'close') {
       const shouldReconnect = (lastDisconnect?.error instanceof Boom) 
         ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
-        : false;
+        : true;
       
-      if (shouldReconnect) {
-        console.log('🔄 إعادة الاتصال بعد 10 ثواني...');
-        setTimeout(() => connectToWhatsApp(phoneNumber), 10000);
+      if (shouldReconnect && !waitingForPairing) {
+        console.log('🔄 إعادة الاتصال...');
+        setTimeout(connectToWhatsApp, 5000);
+      } else if (waitingForPairing) {
+        console.log('⏸️  في انتظار إدخال كود الاقتران...');
       } else {
-        console.log('❌ تم تسجيل الخروج. الرجاء حذف مجلد auth_info_baileys وإعادة المحاولة.');
-        process.exit(0);
+        console.log('❌ تم تسجيل الخروج');
+        pairingCodeRequested = false;
       }
     } else if (connection === 'open') {
       console.log('✅ تم الاتصال بنجاح!');
-      console.log(`🤖 بوت ${BOT_NAME} جاهز للعمل!`);
+      console.log(`🤖 بوت ${BOT_NAME} جاهز للعمل!\n`);
+      pairingCodeRequested = false;
+      waitingForPairing = false;
     }
   });
 
-  // طلب كود الاقتران مباشرة إذا كان البوت غير مسجل
-  if (!state.creds.registered && phoneNumber) {
-    try {
-      console.log('📲 جاري طلب كود الاقتران...\n');
-      const code = await sock.requestPairingCode(phoneNumber);
-      console.log(`━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`🔐 كود الربط: ${code}`);
-      console.log(`━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`📱 أدخل هذا الكود في WhatsApp:`);
-      console.log(`   1. افتح WhatsApp`);
-      console.log(`   2. اذهب إلى: الإعدادات > الأجهزة المرتبطة`);
-      console.log(`   3. اضغط على: ربط جهاز`);
-      console.log(`   4. أدخل الكود: ${code}`);
-      console.log(`━━━━━━━━━━━━━━━━━━━━\n`);
-      console.log('⏳ في انتظار إتمام الاقتران...\n');
-    } catch (error) {
-      console.error('❌ خطأ في طلب كود الربط:', error.message);
-      console.log('\n💡 تأكد من:');
-      console.log('   - رقم الهاتف صحيح (مع رمز الدولة)');
-      console.log('   - اتصالك بالإنترنت مستقر');
-      console.log('   - حذف مجلد auth_info_baileys وإعادة المحاولة\n');
+  if (!state.creds.registered && !pairingCodeRequested) {
+    pairingCodeRequested = true;
+    waitingForPairing = true;
+    
+    let phoneNumber = process.env.PHONE_NUMBER;
+    
+    if (!phoneNumber) {
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('⚠️  لم يتم تعيين رقم الهاتف');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('يرجى تعيين متغير البيئة PHONE_NUMBER');
+      console.log('مثال: PHONE_NUMBER=966501234567');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      
+      phoneNumber = await new Promise((resolve) => {
+        rl.question('أو أدخل رقم الهاتف الآن (مع رمز الدولة): ', (number) => {
+          resolve(number.replace(/[^0-9]/g, ''));
+        });
+      });
+    } else {
+      phoneNumber = phoneNumber.replace(/[^0-9]/g, '');
+      console.log(`📱 رقم الهاتف: ${phoneNumber}`);
+    }
+    
+    if (!phoneNumber) {
+      console.error('❌ رقم الهاتف مطلوب');
+      pairingCodeRequested = false;
+      waitingForPairing = false;
       process.exit(1);
     }
+    
+    setTimeout(async () => {
+      try {
+        console.log('\n📲 جاري طلب كود الاقتران...\n');
+        const code = await sock.requestPairingCode(phoneNumber);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('');
+        console.log(`           🔐 كود الربط: ${code}`);
+        console.log('');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('');
+        console.log('⚡ أدخل الكود فوراً في WhatsApp:');
+        console.log('   1. افتح WhatsApp على هاتفك الآن');
+        console.log('   2. الإعدادات > الأجهزة المرتبطة');
+        console.log('   3. ربط جهاز');
+        console.log(`   4. أدخل: ${code}`);
+        console.log('');
+        console.log('⚠️  IMPORTANT: أدخل الكود خلال 20 ثانية!');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      } catch (error) {
+        console.error('❌ خطأ في طلب كود الربط:', error.message);
+        console.log('\n💡 إذا استمرت المشكلة:');
+        console.log('   - احذف مجلد auth_info_baileys');
+        console.log('   - أعد تشغيل البوت');
+        console.log('   - أدخل الكود بسرعة كبيرة\n');
+        pairingCodeRequested = false;
+        waitingForPairing = false;
+      }
+    }, 2000);
   }
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -104,7 +147,6 @@ async function connectToWhatsApp(phoneNumber = null) {
     try {
       await handleMessage(sock, msg);
     } catch (error) {
-      console.error('❌ خطأ في معالجة الرسالة:', error.message);
     }
   });
 
@@ -126,11 +168,6 @@ async function handleMessage(sock, msg) {
   const chatId = msg.key.remoteJid;
   const userSession = userSessions.get(chatId);
 
-  if (text.toLowerCase() === 'مرحبا' || text.toLowerCase() === 'السلام عليكم' || text.toLowerCase() === 'hi' || text.toLowerCase() === 'start') {
-    await sendWelcomeMessage(sock, chatId);
-    return;
-  }
-
   if (userSession && userSession.waitingForNumber) {
     const selectedNumber = parseInt(text.trim());
     
@@ -139,7 +176,7 @@ async function handleMessage(sock, msg) {
       userSessions.delete(chatId);
       
       await sendWithContext(sock, chatId, { 
-        text: '⏳ جاري جلب تفاصيل التطبيق...' 
+        text: 'جاري جلب تفاصيل التطبيق... ⏳' 
       });
 
       try {
@@ -149,22 +186,22 @@ async function handleMessage(sock, msg) {
           country: 'sa'
         });
 
-        await sendAppWithStreaming(sock, chatId, appDetails);
+        await sendAppWithDownload(sock, chatId, appDetails);
       } catch (error) {
         await sendWithContext(sock, chatId, { 
-          text: '❌ حدث خطأ أثناء جلب تفاصيل التطبيق.\n\nحاول مرة أخرى لاحقاً 🔄' 
+          text: 'حدث خطأ أثناء جلب تفاصيل التطبيق.' 
         });
       }
     } else {
       await sendWithContext(sock, chatId, { 
-        text: '⚠️ الرجاء إرسال رقم صحيح من القائمة.\n\nأرسل رقماً بين 1 و ' + userSession.apps.length 
+        text: 'الرجاء إرسال رقم صحيح من القائمة.' 
       });
     }
     return;
   }
 
   await sendWithContext(sock, chatId, { 
-    text: '🔍 جاري البحث في متجر Google Play...\n\n⏳ الرجاء الانتظار' 
+    text: '🔄 جاري البحث في متجر Google Play...' 
   });
 
   try {
@@ -177,7 +214,7 @@ async function handleMessage(sock, msg) {
 
     if (results.length === 0) {
       await sendWithContext(sock, chatId, { 
-        text: '😔 لم يتم العثور على نتائج.\n\n💡 جرب كلمة بحث أخرى أو تحقق من الإملاء' 
+        text: 'لم يتم العثور على نتائج. جرب كلمة بحث أخرى.' 
       });
       return;
     }
@@ -188,7 +225,7 @@ async function handleMessage(sock, msg) {
     
     results.forEach((app, index) => {
       const star = '⭐'.repeat(Math.round(app.score || 0));
-      listMessage += `${getNumberEmoji(index + 1)} *${app.title}*\n`;
+      listMessage += `${index + 1}. *${app.title}*\n`;
       listMessage += `   📦 ${app.appId}\n`;
       listMessage += `   ${star} ${app.score ? app.score.toFixed(1) : 'N/A'}\n`;
       listMessage += `   💾 ${app.size || 'غير متوفر'}\n`;
@@ -215,96 +252,14 @@ async function handleMessage(sock, msg) {
 
   } catch (error) {
     await sendWithContext(sock, chatId, { 
-      text: '❌ حدث خطأ أثناء البحث.\n\n🔄 حاول مرة أخرى بعد قليل' 
+      text: 'حدث خطأ أثناء البحث. حاول مرة أخرى.' 
     });
   }
 }
 
-async function sendWelcomeMessage(sock, chatId) {
-  const welcomeText = `
-╔═══════════════════════╗
-       🤖 *${BOT_NAME} Bot* 🤖
-╚═══════════════════════╝
-
-*مرحباً بك في بوت تحميل التطبيقات!* 👋
-
-━━━━━━━━━━━━━━━━━━━━
-
-✨ *الميزات المتاحة:*
-
-📱 تحميل من Google Play
-📦 دعم APK, XAPK, APKS
-🎮 دعم ملفات OBB
-⚡ تحميل سريع ومباشر
-🔒 آمن ومضمون 100%
-
-━━━━━━━━━━━━━━━━━━━━
-
-📝 *كيفية الاستخدام:*
-
-1️⃣ أرسل اسم التطبيق
-2️⃣ اختر من القائمة
-3️⃣ احصل على التطبيق مباشرة!
-
-━━━━━━━━━━━━━━━━━━━━
-
-🚀 *ابدأ الآن!*
-أرسل اسم أي تطبيق تريد تحميله
-
-━━━━━━━━━━━━━━━━━━━━
-
-📱 تابعنا على انستجرام:
-🔗 instagram.com/omarxarafp
-
-💻 تطوير: ${BOT_NAME} Team
-⚡ نسخة محسّنة 2.0
-`.trim();
-
+async function sendAppWithDownload(sock, chatId, app) {
   try {
-    await sock.sendMessage(chatId, {
-      text: welcomeText,
-      contextInfo: {
-        externalAdReply: {
-          title: `${BOT_NAME} - بوت تحميل التطبيقات`,
-          body: 'أسرع طريقة لتحميل تطبيقات أندرويد 🚀',
-          thumbnailUrl: BOT_LOGO,
-          sourceUrl: 'https://instagram.com/omarxarafp',
-          mediaType: 1,
-          renderLargerThumbnail: true
-        }
-      }
-    });
-  } catch (error) {
-    await sock.sendMessage(chatId, { text: welcomeText });
-  }
-}
-
-async function sendWithContext(sock, chatId, options) {
-  try {
-    if (!options.contextInfo) {
-      options.contextInfo = {
-        externalAdReply: {
-          title: BOT_NAME,
-          body: 'بوت تحميل التطبيقات',
-          thumbnailUrl: BOT_LOGO,
-          sourceUrl: 'https://instagram.com/omarxarafp',
-          mediaType: 1
-        }
-      };
-    }
-    const sentMsg = await sock.sendMessage(chatId, options);
-    return sentMsg;
-  } catch (error) {
-    delete options.contextInfo;
-    const sentMsg = await sock.sendMessage(chatId, options);
-    return sentMsg;
-  }
-}
-
-async function sendAppWithStreaming(sock, chatId, app) {
-  try {
-    const infoMessage = `
-╔══════════════════════╗
+    const infoMessage = `╔══════════════════════╗
     📱 *معلومات التطبيق*
 ╚══════════════════════╝
 
@@ -325,8 +280,7 @@ ${app.summary || app.description?.substring(0, 250) || 'غير متوفر'}...
 
 ━━━━━━━━━━━━━━━━━━━━
 
-🔄 *جاري تحضير التطبيق...*
-`.trim();
+🔄 *جاري تحضير التطبيق...*`.trim();
 
     if (app.icon) {
       try {
@@ -391,9 +345,7 @@ ${app.summary || app.description?.substring(0, 250) || 'غير متوفر'}...
               text: `${emoji} جاري التحميل... ${progress}%\n\n${progressBar}\n\n📦 ${downloadInfo.type.toUpperCase()}`,
               edit: progressMsg?.key
             });
-          } catch (e) {
-            console.error('فشل تحديث التقدم:', e.message);
-          }
+          } catch (e) {}
         }
       });
 
@@ -442,18 +394,140 @@ ${app.summary || app.description?.substring(0, 250) || 'غير متوفر'}...
       });
 
     } catch (uploadError) {
-      console.error('خطأ في الرفع:', uploadError.message);
       await sendWithContext(sock, chatId, { 
         text: '❌ حدث خطأ أثناء رفع الملف.\n\n💡 الملف قد يكون كبيراً جداً' 
       });
     }
 
   } catch (error) {
-    console.error('خطأ عام:', error.message);
     await sendWithContext(sock, chatId, { 
       text: '❌ حدث خطأ أثناء معالجة التطبيق.\n\n🔄 حاول مرة أخرى' 
     });
   }
+}
+
+async function sendWithContext(sock, chatId, options) {
+  try {
+    if (!options.contextInfo) {
+      options.contextInfo = {
+        externalAdReply: {
+          title: BOT_NAME,
+          body: 'بوت تحميل التطبيقات',
+          thumbnailUrl: BOT_LOGO,
+          sourceUrl: 'https://instagram.com/omarxarafp',
+          mediaType: 1
+        }
+      };
+    }
+    const sentMsg = await sock.sendMessage(chatId, options);
+    return sentMsg;
+  } catch (error) {
+    delete options.contextInfo;
+    const sentMsg = await sock.sendMessage(chatId, options);
+    return sentMsg;
+  }
+}
+
+async function findBestDownloadSource(packageName) {
+  const sources = [
+    {
+      name: 'APKPure XAPK',
+      url: `https://d.apkpure.com/b/XAPK/${packageName}?version=latest`,
+      type: 'xapk'
+    },
+    {
+      name: 'APKPure APK',
+      url: `https://d.apkpure.com/b/APK/${packageName}?version=latest`,
+      type: 'apk'
+    },
+    {
+      name: 'APKCombo APKS',
+      url: `https://apkcombo.com/downloader/download?package=${packageName}&type=apks`,
+      type: 'apks'
+    }
+  ];
+
+  for (const source of sources) {
+    try {
+      const response = await new Promise((resolve, reject) => {
+        cloudscraper.head({
+          url: source.url,
+          followRedirect: true,
+          timeout: 20000
+        }, (error, response) => {
+          if (error) reject(error);
+          else resolve(response);
+        });
+      });
+
+      if (response && response.statusCode === 200) {
+        const contentLength = response.headers['content-length'];
+        return {
+          url: response.request.href,
+          type: source.type,
+          size: contentLength ? formatBytes(parseInt(contentLength)) : null,
+          source: source.name
+        };
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function downloadFileWithProgress(url, filepath, progressCallback) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(filepath);
+    let downloadedBytes = 0;
+    let totalBytes = 0;
+    let lastReportedProgress = 0;
+
+    const request = cloudscraper.get({
+      url: url,
+      encoding: null,
+      timeout: 600000
+    });
+
+    request.on('response', (response) => {
+      if (response.statusCode !== 200) {
+        reject(new Error(`فشل التحميل: ${response.statusCode}`));
+        return;
+      }
+
+      totalBytes = parseInt(response.headers['content-length'] || '0');
+      
+      response.on('data', (chunk) => {
+        downloadedBytes += chunk.length;
+        file.write(chunk);
+
+        if (totalBytes > 0 && progressCallback) {
+          const progress = Math.floor((downloadedBytes / totalBytes) * 100);
+          if (progress !== lastReportedProgress) {
+            lastReportedProgress = progress;
+            progressCallback(progress);
+          }
+        }
+      });
+
+      response.on('end', () => {
+        file.end();
+        if (progressCallback) progressCallback(100);
+        resolve(true);
+      });
+
+      response.on('error', (error) => {
+        file.end();
+        reject(error);
+      });
+    });
+
+    request.on('error', (error) => {
+      file.end();
+      reject(error);
+    });
+  });
 }
 
 async function handleCompressedApp(sock, chatId, app, zipPath, type) {
@@ -518,7 +592,6 @@ async function handleCompressedApp(sock, chatId, app, zipPath, type) {
                 }
               });
             } catch (e) {
-              console.error('فشل رفع OBB:', e.message);
               await sendWithContext(sock, chatId, { 
                 text: `⚠️ ملف OBB كبير جداً: ${obbSizeMB} MB\n\nيمكنك تحميله يدوياً من APKPure` 
               });
@@ -563,7 +636,6 @@ async function handleCompressedApp(sock, chatId, app, zipPath, type) {
       });
     }
   } catch (zipError) {
-    console.error('خطأ في معالجة ZIP:', zipError.message);
     const zipBuffer = fs.readFileSync(zipPath);
     const zipSizeMB = (zipBuffer.length / (1024 * 1024)).toFixed(2);
     
@@ -585,109 +657,6 @@ async function handleCompressedApp(sock, chatId, app, zipPath, type) {
   }
 }
 
-async function findBestDownloadSource(packageName) {
-  const sources = [
-    {
-      name: 'APKPure XAPK',
-      url: `https://d.apkpure.com/b/XAPK/${packageName}?version=latest`,
-      type: 'xapk'
-    },
-    {
-      name: 'APKPure APK',
-      url: `https://d.apkpure.com/b/APK/${packageName}?version=latest`,
-      type: 'apk'
-    },
-    {
-      name: 'APKCombo APKS',
-      url: `https://apkcombo.com/downloader/download?package=${packageName}&type=apks`,
-      type: 'apks'
-    }
-  ];
-
-  for (const source of sources) {
-    try {
-      const response = await new Promise((resolve, reject) => {
-        cloudscraper.head({
-          url: source.url,
-          followRedirect: true,
-          timeout: 20000
-        }, (error, response) => {
-          if (error) reject(error);
-          else resolve(response);
-        });
-      });
-
-      if (response && response.statusCode === 200) {
-        const contentLength = response.headers['content-length'];
-        return {
-          url: response.request.href,
-          type: source.type,
-          size: contentLength ? formatBytes(parseInt(contentLength)) : null,
-          source: source.name
-        };
-      }
-    } catch (error) {
-      console.error(`فشل مصدر ${source.name}:`, error.message);
-      continue;
-    }
-  }
-
-  return null;
-}
-
-async function downloadFileWithProgress(url, filepath, progressCallback) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(filepath);
-    let downloadedBytes = 0;
-    let totalBytes = 0;
-    let lastReportedProgress = 0;
-
-    const request = cloudscraper.get({
-      url: url,
-      encoding: null,
-      timeout: 600000
-    });
-
-    request.on('response', (response) => {
-      if (response.statusCode !== 200) {
-        reject(new Error(`فشل التحميل: ${response.statusCode}`));
-        return;
-      }
-
-      totalBytes = parseInt(response.headers['content-length'] || '0');
-      
-      response.on('data', (chunk) => {
-        downloadedBytes += chunk.length;
-        file.write(chunk);
-
-        if (totalBytes > 0 && progressCallback) {
-          const progress = Math.floor((downloadedBytes / totalBytes) * 100);
-          if (progress !== lastReportedProgress) {
-            lastReportedProgress = progress;
-            progressCallback(progress);
-          }
-        }
-      });
-
-      response.on('end', () => {
-        file.end();
-        if (progressCallback) progressCallback(100);
-        resolve(true);
-      });
-
-      response.on('error', (error) => {
-        file.end();
-        reject(error);
-      });
-    });
-
-    request.on('error', (error) => {
-      file.end();
-      reject(error);
-    });
-  });
-}
-
 function getMimeType(type) {
   const mimeTypes = {
     'apk': 'application/vnd.android.package-archive',
@@ -696,6 +665,13 @@ function getMimeType(type) {
     'obb': 'application/octet-stream'
   };
   return mimeTypes[type] || 'application/octet-stream';
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(2) + ' KB';
+  return bytes + ' B';
 }
 
 function sanitizeFilename(filename) {
@@ -722,18 +698,6 @@ function formatNumber(num) {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toString();
-}
-
-function formatBytes(bytes) {
-  if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-  if (bytes >= 1024) return (bytes / 1024).toFixed(2) + ' KB';
-  return bytes + ' B';
-}
-
-function getNumberEmoji(num) {
-  const emojis = ['0️⃣', '1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-  return emojis[num] || `${num}.`;
 }
 
 setInterval(() => {
@@ -764,34 +728,7 @@ console.log('━━━━━━━━━━━━━━━━━━━━━━�
 console.log('⏳ جاري بدء التشغيل...');
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-async function startBot() {
-  const { state } = await useMultiFileAuthState('auth_info_baileys');
-  
-  let phoneNumber = null;
-  
-  if (!state.creds.registered) {
-    console.log('📱 البوت غير مسجل. سنحتاج إلى رقم هاتفك.\n');
-    phoneNumber = await new Promise((resolve) => {
-      rl.question('أدخل رقم الهاتف (مع رمز الدولة، مثال: 966501234567): ', (number) => {
-        resolve(number.replace(/[^0-9]/g, ''));
-      });
-    });
-    
-    if (!phoneNumber || phoneNumber.length < 10) {
-      console.log('❌ رقم الهاتف غير صحيح. يجب أن يكون على الأقل 10 أرقام.');
-      process.exit(1);
-    }
-    
-    console.log(`✅ تم إدخال الرقم: ${phoneNumber}`);
-    console.log('⏳ جاري الاتصال...\n');
-  } else {
-    console.log('✅ البوت مسجل مسبقاً. جاري الاتصال...\n');
-  }
-  
-  connectToWhatsApp(phoneNumber).catch(error => {
-    console.error('❌ فشل الاتصال:', error.message);
-    setTimeout(() => process.exit(1), 2000);
-  });
-}
-
-startBot();
+connectToWhatsApp().catch(error => {
+  console.error('❌ فشل الاتصال:', error.message);
+  setTimeout(() => process.exit(1), 2000);
+});
