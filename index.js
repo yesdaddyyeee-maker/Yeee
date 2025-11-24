@@ -47,7 +47,7 @@ async function connectToWhatsApp() {
     },
     logger,
     printQRInTerminal: false,
-    browser: ['Windows', 'Chrome', '10.0']
+    browser: ["Windows", "Safari", "1.0"]
   });
 
   sock.ev.on('creds.update', saveCreds);

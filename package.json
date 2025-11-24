@@ -1,24 +1,20 @@
 {
-  "name": "appomar-whatsapp-bot",
-  "version": "2.0.0",
-  "description": "AppOmar WhatsApp Bot - تحميل التطبيقات من Google Play مع دعم APK, XAPK, APKS, OBB",
-  "type": "module",
+  "name": "appomar-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot for downloading apps from Google Play using Baileys",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
-  "keywords": ["whatsapp", "bot", "apk", "xapk", "google-play"],
-  "author": "AppOmar",
-  "license": "MIT",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.8",
     "@hapi/boom": "^10.0.1",
-    "pino": "^8.19.0",
-    "google-play-scraper": "^9.1.3",
-    "cloudscraper": "^4.6.0",
-    "axios": "^1.6.7",
+    "@whiskeysockets/baileys": "^6.6.0",
     "adm-zip": "^0.5.10",
-    "node-fetch": "^3.3.2",
-    "cheerio": "^1.0.0-rc.12"
+    "axios": "^1.6.2",
+    "cloudscraper": "^4.6.0",
+    "dotenv": "^17.2.3",
+    "google-play-scraper": "^9.2.0",
+    "pino": "^8.15.0"
   }
 }
